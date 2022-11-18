@@ -40,7 +40,7 @@ class Critic(nn.Module):
 
 
 class PPO:
-    def __init__(self, j_env, unit_num=100, memory_size=5, batch_size=32, clip_ep=0.2):
+    def __init__(self, j_env, unit_num, memory_size, batch_size, clip_ep=0.2):
         super(PPO, self).__init__()
         self.env = j_env
         self.memory_size = memory_size
@@ -68,8 +68,8 @@ class PPO:
         self.beta = 0.4
         self.convergence_episode = 2000
         self.upper_prob = 0.6
+        self.training_step = 0
         self.beta_increment = (self.upper_prob - self.beta) / self.convergence_episode
-        self.train_steps = 0
 
     def select_action(self, state):
         state = torch.from_numpy(state).float().unsqueeze(0)
@@ -108,9 +108,9 @@ class PPO:
         action_prob = self.actor_net(state).gather(1, action)  # new policy
         ratio = (action_prob / old_prob)
         surrogate = ratio * advantage
-        clip_loss = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantage
+        clip_loss = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon)
+        # action_loss = -(torch.min(surrogate, clip_loss)*weights).mean()
         action_loss = -torch.min(surrogate, clip_loss).mean()
-        # action_loss = -(torch.min(surrogate, clip_loss) * weights).mean()
 
         # update actor network
         self.actor_optimizer.zero_grad()
@@ -119,14 +119,14 @@ class PPO:
         self.actor_optimizer.step()
 
         # update critic network
-        value_loss = sum((d_reward-V).pow(2)/d_reward.size(0) * weights)
+        value_loss = sum((d_reward-V).pow(2)/d_reward.size(0)*weights)
         self.critic_net_optimizer.zero_grad()
         value_loss.backward()
         nn.utils.clip_grad_norm_(self.critic_net.parameters(), self.max_grad_norm)
         self.critic_net_optimizer.step()
         # calculate priorities
         for i in range(len(advantage)):
-            if advantage[i] < 0 and self.train_steps > self.convergence_episode:
+            if advantage[i] < 0 and self.training_step > self.convergence_episode:
                 advantage[i] = 1e-5
         prob = abs(advantage) ** self.alpha
         return np.array(prob).flatten()
@@ -139,14 +139,14 @@ class PPO:
         d_reward = torch.tensor(br, dtype=torch.float)
 
         for i in range(self.UPDATE_STEPS):
-            self.train_steps += 1
+            self.training_step += 1
             # # replay all experience
             for index in BatchSampler(SubsetRandomSampler(range(len(ba))), self.batch_size, False):
                 self.priorities[index] = self.learn(state[index], action[index], d_reward[index], old_log_prob[index])
             # priority replay
             prob1 = self.priorities / np.sum(self.priorities)
             indices = np.random.choice(len(ba), self.batch_size, p=prob1)
-            weights = (len(ba) * prob1[indices]) ** -self.beta
+            weights = (len(ba) * prob1[indices]) ** - self.beta
             if self.beta < self.upper_prob:
                 self.beta += self.beta_increment
             weights = weights / np.max(weights)
@@ -212,7 +212,7 @@ class PPO:
 
 
 if __name__ == '__main__':
-    data_set_name = "per-abs-ISC-pos-200-5"
+    data_set_name = "per-abs-ISC-pos-2000"
     path = "../data_set_sizes/"
     parameters = data_set_name
     param = [parameters, "converge_cnt", "total_time", "no-op"]
